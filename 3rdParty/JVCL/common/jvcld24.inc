@@ -35,7 +35,7 @@ Known Issues:
 { The installer enables this define if you compile JVCL for a Delphi edition that has
   the BDE. It is enabled by default for any 32 bit version prior to XE7 where the pro and 
   upper editions no longer have the BDE files installed by default. }
-{$DEFINE USE_BDE}
+{.$DEFINE USE_BDE}
 
 { Enable this define if you have the dxgettext (http://dxgettext.sourceforge.net)
 translation tool installed and want to use it with the JVCL. }
