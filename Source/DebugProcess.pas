@@ -1,24 +1,25 @@
-(* ************************************************************ *)
-(* Delphi Code Coverage *)
-(* *)
-(* A quick hack of a Code Coverage Tool for Delphi 2010 *)
-(* by Christer Fahlgren and Nick Ring *)
-(* ************************************************************ *)
-(* Licensed under Mozilla Public License 1.1 *)
-(* ************************************************************ *)
+(***********************************************************************)
+(* Delphi Code Coverage                                                *)
+(*                                                                     *)
+(* A quick hack of a Code Coverage Tool for Delphi                     *)
+(* by Christer Fahlgren and Nick Ring                                  *)
+(*                                                                     *) 
+(* This Source Code Form is subject to the terms of the Mozilla Public *)
+(* License, v. 2.0. If a copy of the MPL was not distributed with this *)
+(* file, You can obtain one at http://mozilla.org/MPL/2.0/.            *)
 
 unit DebugProcess;
 
 interface
 
 uses
-  Classes,
-  Windows,
+  System.Classes,
+  System.Generics.Collections,
+  Winapi.Windows,
   I_DebugThread,
   I_DebugProcess,
   I_LogManager,
   I_DebugModule,
-  Generics.Collections,
   JCLDebug;
 
 type
@@ -72,8 +73,7 @@ type
 implementation
 
 uses
-  SysUtils,
-  JwaWinBase;
+  System.SysUtils;
 
 constructor TDebugProcess.Create(
   const AProcessId: DWORD;
@@ -170,17 +170,21 @@ end;
 
 function TDebugProcess.FindDebugModuleFromAddress(Addr: Pointer): IDebugModule;
 var
-  CurrentModule: IDebugModule;
-  ModuleAddress: DWORD;
+  ModuleAddress: NativeUINT;
 
   function AddressBelongsToModule(const AModule: IDebugModule): Boolean;
+  var Base: HMODULE;
   begin
-    Result := ((ModuleAddress >= AModule.Base)
-              and (ModuleAddress <= (AModule.Base + AModule.Size)));
+    Base := AModule.Base;
+    Result := ((ModuleAddress >= Base)
+              and (ModuleAddress <= (Base + AModule.Size)));
   end;
+
+var
+  CurrentModule: IDebugModule;
 begin
   Result := nil;
-  ModuleAddress := DWORD(Addr);
+  ModuleAddress := NativeUINT(Addr);
 
   if AddressBelongsToModule(IDebugProcess(Self)) then
     Result := IDebugProcess(self)
@@ -218,19 +222,19 @@ function TDebugProcess.ReadProcessMemory(
   const ASize: Cardinal;
   const AChangeProtect: Boolean = False): Integer;
 var
-  oldprot: UINT;
-  numbytes: DWORD;
-  changed: Boolean;
+  OldProtect: UINT;
+  NumberOfBytesRead: SIZE_T;
+  Changed: Boolean;
 begin
   Changed := False;
-  if not JwaWinBase.ReadProcessMemory(Handle, AAddress, AData, ASize, @numbytes) then
+  if not Winapi.Windows.ReadProcessMemory(Handle, AAddress, AData, ASize, NumberOfBytesRead) then
   begin
     // try changing protection
     if AChangeProtect
-    and not VirtualProtectEx(Handle, AAddress, ASize, PAGE_EXECUTE_READ, @oldprot) then
+    and not VirtualProtectEx(Handle, AAddress, ASize, PAGE_EXECUTE_READ, @OldProtect) then
     begin
-      changed := true;
-      if not JwaWinBase.ReadProcessMemory(Handle, AAddress, AData, ASize, @numbytes) then
+      Changed := true;
+      if not Winapi.Windows.ReadProcessMemory(Handle, AAddress, AData, ASize, NumberOfBytesRead) then
       begin
         FLogManager.Log(
           'ReadProcessMemory failed reading address - ' + AddrToHex(AAddress) +
@@ -247,20 +251,20 @@ begin
     end;
   end;
 
-  if numbytes <> ASize then
+  if NumberOfBytesRead <> ASize then
   begin
     FLogManager.Log(
       'ReadProcessMemory failed to read address - ' + AddrToHex(AAddress)
-      + ' Wrong number of bytes - ' + IntToStr(numbytes)
+      + ' Wrong number of bytes - ' + IntToStr(NumberOfBytesRead)
       + ' Error:' + I_LogManager.LastErrorInfo);
     Result := -1;
     exit;
   end;
 
-  if changed then
+  if Changed then
   begin
     if AChangeProtect
-    and not VirtualProtectEx(Handle, AAddress, ASize, oldprot, @oldprot) then
+    and not VirtualProtectEx(Handle, AAddress, ASize, OldProtect, @OldProtect) then
     begin
       FLogManager.Log(
         'ReadProcessMemory Failed to restore access read address - ' + AddrToHex(AAddress)
@@ -270,7 +274,7 @@ begin
     end;
   end;
 
-  Result := numbytes;
+  Result := NumberOfBytesRead;
 end;
 
 function TDebugProcess.WriteProcessMemory(
@@ -278,17 +282,17 @@ function TDebugProcess.WriteProcessMemory(
   const ASize: Cardinal;
   const AChangeProtect: Boolean = False): Integer;
 var
-  oldprot: UINT;
-  numbytes: DWORD;
-  changed: Boolean;
+  OldProtect: UINT;
+  NumberOfBytesWritten: SIZE_T;
+  Changed: Boolean;
 begin
-  changed := False; // keep track if we changed page protection
+  Changed := False; // keep track if we changed page protection
 
-  if not JwaWinBase.WriteProcessMemory(Handle, AAddress, AData, ASize, @numbytes) then
+  if not Winapi.Windows.WriteProcessMemory(Handle, AAddress, AData, ASize, NumberOfBytesWritten) then
   begin
     // Failed to write, thus we try to change the protection
     if AChangeProtect
-    and not(VirtualProtectEx(Handle, AAddress, ASize, PAGE_EXECUTE_READWRITE, @oldprot)) then
+    and not(VirtualProtectEx(Handle, AAddress, ASize, PAGE_EXECUTE_READWRITE, @OldProtect)) then
     begin
       FLogManager.Log(
         'WriteProcessMemory failed to change protection to PAGE_EXECUTE_READWRITE address - ' + AddrToHex(AAddress) +
@@ -298,10 +302,10 @@ begin
     end
     else
     begin
-      changed := true;
+      Changed := True;
 
       // Try again after changing protection
-      if not JwaWinBase.WriteProcessMemory(Handle, AAddress, AData, ASize, @numbytes) then
+      if not Winapi.Windows.WriteProcessMemory(Handle, AAddress, AData, ASize, NumberOfBytesWritten) then
       begin
         FLogManager.Log(
           'WriteProcessMemory failed writing address - ' + AddrToHex(AAddress) +
@@ -312,19 +316,19 @@ begin
     end;
   end;
 
-  if (numbytes <> ASize) then
+  if (NumberOfBytesWritten <> ASize) then
   begin
     FLogManager.Log(
       'WriteProcessMemory failed to write address - ' + AddrToHex(AAddress) +
-      ' Wrong number of bytes - ' + IntToStr(numbytes) +
+      ' Wrong number of bytes - ' + IntToStr(NumberOfBytesWritten) +
       ' Error:' + I_LogManager.LastErrorInfo);
     Result := -1;
     exit;
   end;
 
-  if changed
+  if Changed
   and AChangeProtect
-  and not VirtualProtectEx(Handle, AAddress, ASize, oldprot, @oldprot) then
+  and not VirtualProtectEx(Handle, AAddress, ASize, OldProtect, @OldProtect) then
   begin
     FLogManager.Log(
       'WriteProcessMemory: Failed to restore access read address - ' + AddrToHex(AAddress) +
@@ -333,14 +337,14 @@ begin
     exit;
   end;
 
-  if not(FlushInstructionCache(Handle, AAddress, numbytes)) then
+  if not(FlushInstructionCache(Handle, AAddress, NumberOfBytesWritten)) then
   begin
     FLogManager.Log(
       'WriteProcessMemory: FlushInstructionCache failed for address - ' + AddrToHex(AAddress) +
       ' Error:' + I_LogManager.LastErrorInfo);
   end;
 
-  Result := numbytes;
+  Result := NumberOfBytesWritten;
 end;
 
 end.

@@ -1,20 +1,21 @@
-(**************************************************************)
-(* Delphi Code Coverage                                       *)
-(*                                                            *)
-(* A quick hack of a Code Coverage Tool for Delphi 2010       *)
-(* by Christer Fahlgren and Nick Ring                         *)
-(**************************************************************)
-(* Licensed under Mozilla Public License 1.1                  *)
-(**************************************************************)
+(***********************************************************************)
+(* Delphi Code Coverage                                                *)
+(*                                                                     *)
+(* A quick hack of a Code Coverage Tool for Delphi                     *)
+(* by Christer Fahlgren and Nick Ring                                  *)
+(*                                                                     *) 
+(* This Source Code Form is subject to the terms of the Mozilla Public *)
+(* License, v. 2.0. If a copy of the MPL was not distributed with this *)
+(* file, You can obtain one at http://mozilla.org/MPL/2.0/.            *)
 
 unit CoverageConfiguration;
 
 interface
 
 uses
-  Classes,
-  SysUtils,
-  XMLIntf,
+  System.Classes,
+  System.SysUtils,
+  Xml.XMLIntf,
   I_CoverageConfiguration,
   I_ParameterProvider,
   I_LogManager,
@@ -39,16 +40,20 @@ type
     FStripFileExtension: Boolean;
     FEmmaOutput: Boolean;
     FEmmaOutput21: Boolean;
+    FJacocoOutput: boolean;
     FSeparateMeta: Boolean;
     FXmlOutput: Boolean;
     FXmlLines: Boolean;
+    FXmlMergeGenerics: Boolean;
     FHtmlOutput: Boolean;
     FTestExeExitCode: Boolean;
+    FUseTestExePathAsWorkingDir: Boolean;
     FExcludeSourceMaskLst: TStrings;
     FLoadingFromDProj: Boolean;
     FModuleNameSpaces: TModuleNameSpaceList;
     FUnitNameSpaces: TUnitNameSpaceList;
     FLineCountLimit: Integer;
+    FCodePage: Integer;
     FLogManager: ILogManager;
 
     procedure ReadSourcePathFile(const ASourceFileName: string);
@@ -56,7 +61,10 @@ type
     procedure ParseSwitch(var AParameter: Integer);
     procedure ParseBooleanSwitches;
     function GetCurrentConfig(const Project: IXMLNode): string;
+    function GetBasePropertyGroupNode(const Project: IXMLNode): IXMLNode;
     function GetExeOutputFromDProj(const Project: IXMLNode; const ProjectName: TFileName): string;
+    function GetSourceDirsFromDProj(const Project: IXMLNode): string;
+    function GetCodePageFromDProj(const Project: IXMLNode): Integer;
     procedure ParseDProj(const DProjFilename: TFileName);
     function IsPathInExclusionList(const APath: TFileName): Boolean;
     procedure ExcludeSourcePaths;
@@ -85,6 +93,7 @@ type
     procedure ParseModuleNameSpaceSwitch(var AParameter: Integer);
     procedure ParseUnitNameSpaceSwitch(var AParameter: Integer);
     procedure ParseLineCountSwitch(var AParameter: Integer);
+    procedure ParseCodePageSwitch(var AParameter: Integer);
   public
     constructor Create(const AParameterProvider: IParameterProvider);
     destructor Destroy; override;
@@ -104,12 +113,16 @@ type
     function IsComplete(var AReason: string): Boolean;
     function EmmaOutput: Boolean;
     function EmmaOutput21: Boolean;
+    function JacocoOutput: Boolean;
     function SeparateMeta: Boolean;
     function XmlOutput: Boolean;
     function XmlLines: Boolean;
+    function XmlMergeGenerics: Boolean;
     function HtmlOutput: Boolean;
     function TestExeExitCode: Boolean;
+    function UseTestExePathAsWorkingDir: Boolean;
     function LineCountLimit: Integer;
+    function CodePage: Integer;
 
     function ModuleNameSpace(const AModuleName: string): TModuleNameSpace;
     function UnitNameSpace(const AModuleName: string): TUnitNameSpace;
@@ -120,18 +133,14 @@ type
 implementation
 
 uses
+  Winapi.Windows,
   System.StrUtils,
+  System.IOUtils,
+  System.Masks,
+  Xml.XMLDoc,
   JclFileUtils,
-  {$IF CompilerVersion < 21}
-  IOUtilsD9,
-  {$ELSE}
-  IOUtils,
-  {$ENDIF}
   LoggerTextFile,
-  LoggerAPI,
-  XMLDoc,
-  Windows,
-  Masks;
+  LoggerAPI;
 
 function Unescape(const AParameter: string): string;
 var
@@ -208,6 +217,11 @@ end;
 function TCoverageConfiguration.LineCountLimit: integer;
 begin
   Result := FLineCountLimit;
+end;
+
+function TCoverageConfiguration.CodePage: Integer;
+begin
+  Result := FCodePage;
 end;
 
 function TCoverageConfiguration.IsComplete(var AReason: string): Boolean;
@@ -312,7 +326,7 @@ begin
   except
     on E: EInOutError do
     begin
-      ConsoleOutput('Could not open:' + AFileName);
+      ConsoleOutput('Could not open: ' + AFileName);
       raise ;
     end;
   end;
@@ -348,6 +362,11 @@ begin
   Result := FXmlLines;
 end;
 
+function TCoverageConfiguration.XmlMergeGenerics: Boolean;
+begin
+  Result := FXmlMergeGenerics;
+end;
+
 function TCoverageConfiguration.HtmlOutput: Boolean;
 begin
   Result := FHtmlOutput;
@@ -356,6 +375,11 @@ end;
 function TCoverageConfiguration.TestExeExitCode: Boolean;
 begin
   Result := FTestExeExitCode;
+end;
+
+function TCoverageConfiguration.UseTestExePathAsWorkingDir: Boolean;
+begin
+  Result := FUseTestExePathAsWorkingDir;
 end;
 
 function TCoverageConfiguration.IsPathInExclusionList(const APath: TFileName): Boolean;
@@ -368,6 +392,11 @@ begin
     if MatchesMask(APath, Mask) then
       Exit(True);
   end;
+end;
+
+function TCoverageConfiguration.JacocoOutput: Boolean;
+begin
+  result := FJacocoOutput;
 end;
 
 procedure TCoverageConfiguration.ParseBooleanSwitches;
@@ -388,9 +417,12 @@ begin
   FSeparateMeta := IsSet(I_CoverageConfiguration.cPARAMETER_EMMA_SEPARATE_META);
   FXmlOutput := IsSet(I_CoverageConfiguration.cPARAMETER_XML_OUTPUT);
   FXmlLines := IsSet(I_CoverageConfiguration.cPARAMETER_XML_LINES);
+  FXmlMergeGenerics := IsSet(I_CoverageConfiguration.cPARAMETER_XML_LINES_MERGE_GENERICS);
   FHtmlOutput := IsSet(I_CoverageConfiguration.cPARAMETER_HTML_OUTPUT);
   uConsoleOutput.G_Verbose_Output := IsSet(I_CoverageConfiguration.cPARAMETER_VERBOSE);
   FTestExeExitCode := IsSet(I_CoverageConfiguration.cPARAMETER_TESTEXE_EXIT_CODE);
+  FUseTestExePathAsWorkingDir := IsSet(I_CoverageConfiguration.cPARAMETER_USE_TESTEXE_WORKING_DIR);
+  FJacocoOutput:= IsSet(I_CoverageConfiguration.cPARAMETER_JACOCO);
 end;
 
 procedure TCoverageConfiguration.ExcludeSourcePaths;
@@ -491,10 +523,10 @@ var
   CurrentUnit: string;
 begin
   for CurrentUnit in FUnitsStrLst do
-    VerboseOutput('Will track coverage for:' + CurrentUnit);
+    VerboseOutput('Will track coverage for: ' + CurrentUnit);
 
   for CurrentUnit in FExcludedUnitsStrLst do
-    VerboseOutput('Exclude from coverage tracking for:' + CurrentUnit);
+    VerboseOutput('Exclude from coverage tracking for: ' + CurrentUnit);
 end;
 
 function TCoverageConfiguration.ParseParameter(const AParameter: Integer): string;
@@ -559,14 +591,19 @@ begin
     FStripFileExtension := False
   else if (SwitchItem = I_CoverageConfiguration.cPARAMETER_LINE_COUNT) then
     ParseLineCountSwitch(AParameter)
+  else if (SwitchItem = I_CoverageConfiguration.cPARAMETER_CODE_PAGE) then
+    ParseCodePageSwitch(AParameter)
   else if (SwitchItem = I_CoverageConfiguration.cPARAMETER_EMMA_OUTPUT)
   or (SwitchItem = I_CoverageConfiguration.cPARAMETER_EMMA21_OUTPUT)
   or (SwitchItem = I_CoverageConfiguration.cPARAMETER_EMMA_SEPARATE_META)
   or (SwitchItem = I_CoverageConfiguration.cPARAMETER_XML_OUTPUT)
   or (SwitchItem = I_CoverageConfiguration.cPARAMETER_XML_LINES)
+  or (SwitchItem = I_CoverageConfiguration.cPARAMETER_XML_LINES_MERGE_GENERICS)
   or (SwitchItem = I_CoverageConfiguration.cPARAMETER_HTML_OUTPUT)
   or (SwitchItem = I_CoverageConfiguration.cPARAMETER_VERBOSE)
-  or (SwitchItem = I_CoverageConfiguration.cPARAMETER_TESTEXE_EXIT_CODE) then
+  or (SwitchItem = I_CoverageConfiguration.cPARAMETER_TESTEXE_EXIT_CODE)
+  or (SwitchItem = I_CoverageConfiguration.cPARAMETER_JACOCO)
+  or (SwitchItem = I_CoverageConfiguration.cPARAMETER_USE_TESTEXE_WORKING_DIR) then
   begin
     // do nothing, because its already parsed
   end
@@ -788,6 +825,14 @@ begin
     begin
       ReadLn(InputFile, SourcePathLine);
 
+      if (FSourceDir <> '') and TPath.IsRelativePath(SourcePathLine) then
+      begin
+        var FullSourceDir := TPath.Combine(FSourceDir, SourcePathLine);
+        if TDirectory.Exists(FullSourceDir) then
+        begin
+          FSourcePathLst.Add(FullSourceDir);
+        end;
+      end;
       SourcePathLine := MakePathAbsolute(SourcePathLine, ASourceFileName);
 
       if DirectoryExists(SourcePathLine) then
@@ -881,13 +926,59 @@ begin
   end;
 end;
 
+function TCoverageConfiguration.GetBasePropertyGroupNode(const Project: IXMLNode): IXMLNode;
+var
+  GroupIndex: Integer;
+begin
+  Assert(Assigned(Project));
+  for GroupIndex := 0 to Project.ChildNodes.Count - 1 do
+  begin
+    Result := Project.ChildNodes.Get(GroupIndex);
+    if (Result.LocalName = 'PropertyGroup')
+    and Result.HasAttribute('Condition')
+    and (
+      (Result.Attributes['Condition'] = '''$(Base)''!=''''')
+      or (Result.Attributes['Condition'] = '''$(Basis)''!=''''')
+    ) then
+      Exit;
+  end;
+  Result := nil;
+end;
+
+function TCoverageConfiguration.GetSourceDirsFromDProj(const Project: IXMLNode): string;
+var
+  Node: IXMLNode;
+begin
+  Result := '';
+  Assert(Assigned(Project));
+
+  Node := GetBasePropertyGroupNode(Project);
+  if Node = nil then Exit;
+  Node := Node.ChildNodes.FindNode('DCC_UnitSearchPath');
+  if Node = nil then Exit;
+  Result := StringReplace(Node.Text, '$(DCC_UnitSearchPath)', '', [rfReplaceAll, rfIgnoreCase]);
+end;
+
+function TCoverageConfiguration.GetCodePageFromDProj(const Project: IXMLNode): Integer;
+var
+  Node: IXMLNode;
+begin
+  Result := 0;
+  Assert(Assigned(Project));
+
+  Node := GetBasePropertyGroupNode(Project);
+  if Node = nil then Exit;
+  Node := Node.ChildNodes.FindNode('DCC_CodePage');
+  if Node = nil then Exit;
+  Result := StrToIntDef(Node.Text, 0);
+end;
+
 function TCoverageConfiguration.GetExeOutputFromDProj(const Project: IXMLNode; const ProjectName: TFileName): string;
 var
   CurrentConfig: string;
   CurrentPlatform: string;
   DCC_ExeOutputNode: IXMLNode;
   DCC_ExeOutput: string;
-  GroupIndex: Integer;
   Node: IXMLNode;
 begin
   Result := '';
@@ -900,15 +991,8 @@ begin
   CurrentPlatform := 'Win32';
   {$ENDIF}
 
-  for GroupIndex := 0 to Project.ChildNodes.Count - 1 do
-  begin
-    Node := Project.ChildNodes.Get(GroupIndex);
-    if (Node.LocalName = 'PropertyGroup')
-    and Node.HasAttribute('Condition')
-    and (
-      (Node.Attributes['Condition'] = '''$(Base)''!=''''')
-      or (Node.Attributes['Condition'] = '''$(Basis)''!=''''')
-    ) then
+  Node := GetBasePropertyGroupNode(Project);
+  if Node <> nil then
     begin
       if CurrentConfig <> '' then
       begin
@@ -924,7 +1008,6 @@ begin
           Result := ChangeFileExt(ProjectName, '.exe');
       end;
     end;
-  end;
 end;
 
 procedure TCoverageConfiguration.ParseDProj(const DProjFilename: TFileName);
@@ -933,7 +1016,7 @@ var
   ItemGroup: IXMLNode;
   Node: IXMLNode;
   Project: IXMLNode;
-  Unitname: string;
+  Unitname, Path, SearchPaths: string;
   I: Integer;
   RootPath: TFileName;
   SourcePath: TFileName;
@@ -953,6 +1036,20 @@ begin
       if FMapFileName = '' then
         FMapFileName := ChangeFileExt(FExeFileName, '.map');
     end;
+
+    SearchPaths := GetSourceDirsFromDProj(Project);
+    if SearchPaths <> '' then
+    begin
+      for Path in SearchPaths.Split([';']) do
+        if Path <> '' then
+        begin
+          SourcePath := TPath.GetFullPath(TPath.Combine(RootPath, Path));
+          if FSourcePathLst.IndexOf(SourcePath) = -1 then
+            FSourcePathLst.Add(SourcePath);
+        end;
+    end;
+
+    FCodePage := GetCodePageFromDProj(Project);
 
     ItemGroup := Project.ChildNodes.FindNode('ItemGroup');
     if ItemGroup <> nil then
@@ -1083,6 +1180,22 @@ begin
     {$ELSE}
     FLineCountLimit := 0;
     {$ENDIF}
+  end;
+end;
+
+procedure TCoverageConfiguration.ParseCodePageSwitch(var AParameter: Integer);
+var
+  ParsedParameter: string;
+begin
+  Inc(AParameter);
+  ParsedParameter := ParseParameter(AParameter);
+  if ParsedParameter.StartsWith('-') then // This is a switch, not a number
+  begin
+    Dec(AParameter);
+  end
+  else
+  begin
+    FCodePage := StrToIntDef(ParsedParameter, 0);
   end;
 end;
 

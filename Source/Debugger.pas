@@ -1,18 +1,20 @@
-(* ************************************************************ *)
-(* Delphi Code Coverage *)
-(* *)
-(* A quick hack of a Code Coverage Tool for Delphi 2010 *)
-(* by Christer Fahlgren and Nick Ring *)
-(* ************************************************************ *)
-(* Licensed under Mozilla Public License 1.1 *)
-(* ************************************************************ *)
+(***********************************************************************)
+(* Delphi Code Coverage                                                *)
+(*                                                                     *)
+(* A quick hack of a Code Coverage Tool for Delphi                     *)
+(* by Christer Fahlgren and Nick Ring                                  *)
+(*                                                                     *) 
+(* This Source Code Form is subject to the terms of the Mozilla Public *)
+(* License, v. 2.0. If a copy of the MPL was not distributed with this *)
+(* file, You can obtain one at http://mozilla.org/MPL/2.0/.            *)
 
 unit Debugger;
 
 interface
 
 uses
-  Classes,
+  Winapi.Windows,
+  System.Classes,
   JclDebug,
   JwaWinBase,
   JwaWinType,
@@ -28,6 +30,7 @@ uses
   ClassInfoUnit,
   ModuleNameSpaceUnit,
   uConsoleOutput,
+  JclPEImage,
   JwaPsApi;
 
 type
@@ -43,6 +46,7 @@ type
     FModuleList: TModuleList;
     FTestExeExitCode: Integer;
     FLastBreakPoint: IBreakPoint;
+    FProcessTarget: TJclPeTarget;
 
     function AddressFromVA(
       const AVA: DWORD;
@@ -51,7 +55,8 @@ type
       const AAddr: Pointer;
       const AModule: HMODULE): DWORD; inline;
     function GetImageName(const APtr: Pointer; const AUnicode: Word;
-      const AlpBaseOfDll: Pointer; const AHandle: THANDLE): string;
+      const AlpBaseOfDll: Pointer; const AHandle: THANDLE;
+      const ADLLHandle: THandle): string;
     procedure AddBreakPoints(
       const AModuleList: TStrings;
       const AExcludedModuleList: TStrings;
@@ -93,18 +98,12 @@ type
     procedure Start;
   end;
 
-function RealReadFromProcessMemory(
-  const AhProcess: THANDLE;
-  const AqwBaseAddress: DWORD64;
-  const AlpBuffer: Pointer;
-  const ASize: DWORD;
-  var ANumberOfBytesRead: DWORD): BOOL; stdcall;
-
 implementation
 
 uses
-  ActiveX,
-  SysUtils,
+  Winapi.ActiveX,
+  System.SysUtils,
+  System.StrUtils,
   JwaNtStatus,
   JwaWinNT,
 {$IFDEF madExcept}
@@ -125,27 +124,45 @@ uses
   I_DebugThread,
   I_Report,
   EmmaCoverageFileUnit,
+  JacocoCoverageFileUnit,
   DebugModule,
-  JclPEImage,
-  JclFileUtils;
+  JclFileUtils, JclMapScannerHelper;
 
-function RealReadFromProcessMemory(
-  const AhProcess: THANDLE;
-  const AqwBaseAddress: DWORD64;
-  const AlpBuffer: Pointer;
-  const ASize: DWORD;
-  var ANumberOfBytesRead: DWORD): BOOL; stdcall;
+function GetApplicationVersion: string;
 var
-  st: DWORD;
+  VersionSegmentSize: DWORD;
+  VersionValue: PChar;
+  BufferSize: DWORD;
 begin
-  Result := JwaWinBase.ReadProcessMemory(
-    AhProcess,
-    Pointer(AqwBaseAddress),
-    AlpBuffer,
-    ASize,
-    @st
-  );
-  ANumberOfBytesRead := st;
+  Result := '';
+  var ApplicationName := ParamStr(0);
+  BufferSize := GetFileVersionInfoSize(PChar(ApplicationName), BufferSize);
+  if BufferSize > 0 then
+  begin
+    var VersionBuffer: PChar := AllocMem(BufferSize);
+    try
+      GetFileVersionInfo(PChar(ApplicationName), 0, BufferSize, VersionBuffer);
+      VersionValue :=  nil;
+      VerQueryValue(VersionBuffer, PChar('\VarFileInfo\Translation'),
+        Pointer(VersionValue), VersionSegmentSize);
+
+      var VersionType := IntToHex(LoWord(PLongInt(VersionValue)^), 4) +
+        IntToHex(HiWord(PLongInt(VersionValue)^), 4)+ '\ProductVersion';
+
+      if VerQueryValue(VersionBuffer, PChar('\StringFileInfo\' + VersionType),
+        Pointer(VersionValue), VersionSegmentSize) then
+      begin
+        Result := VersionValue;
+        Result := ReplaceText(ReplaceText(Result, 'Build', '.'), ' ', '');
+      end;
+    finally
+      FreeMem(VersionBuffer, BufferSize);
+    end;
+  end
+  else
+  begin
+    OutputDebugString(PChar('GetApplicationProductVersion error ' + SysErrorMessage(GetLastError)));
+  end;
 end;
 
 constructor TDebugger.Create;
@@ -160,6 +177,7 @@ begin
 
   FLogManager := TLogManager.Create;
   uConsoleOutput.G_LogManager := FLogManager;
+  ConsoleOutput('CodeCoverage v' + GetApplicationVersion);
 
   FModuleList := TModuleList.Create;
 end;
@@ -180,7 +198,7 @@ end;
 
 procedure TDebugger.PrintUsage;
 begin
-  ConsoleOutput('Usage:CodeCoverage.exe [switches]');
+  ConsoleOutput('Usage: CodeCoverage.exe [switches]');
   ConsoleOutput('List of switches:');
   // --------------------------------------------------------------------------
   ConsoleOutput('');
@@ -242,16 +260,35 @@ begin
   ConsoleOutput('                       check for any units to report on');
   ConsoleOutput(I_CoverageConfiguration.cPARAMETER_EMMA_OUTPUT +
       '               -- Output emma coverage file as coverage.es in the output directory');
+  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_EMMA21_OUTPUT +
+      '             -- Output emma21 coverage file as coverage.es in the output directory');
+  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_EMMA_SEPARATE_META +
+      '               -- Generate separate meta and coverage files when generating emma');
+  ConsoleOutput('                       output - ''coverage.em'' and ''coverage.ec'' will be generated');
+  ConsoleOutput('                       for meta data and coverage data. NOTE: Needs -emma as well.');
+  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_HTML_OUTPUT +
+      '               -- Generate html output as ''CodeCoverage_Summary.html'' in the output directory');
   ConsoleOutput(I_CoverageConfiguration.cPARAMETER_XML_OUTPUT +
       '                -- Output xml report as CodeCoverage_Summary.xml in the output directory');
-  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_HTML_OUTPUT +
-      '               -- Output html report as CodeCoverage_Summary.html in the output directory');
+  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_XML_LINES +
+      '           -- Adds lines coverage to the generated xml coverage output');
+  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_XML_LINES_MERGE_GENERICS +
+      '        -- Combine lines coverage for multiple occurrences of the same');
+  ConsoleOutput('                       filename (especially usefull in case of generic classes)');
   ConsoleOutput(I_CoverageConfiguration.cPARAMETER_MODULE_NAMESPACE +
       ' name dll [dll2]   -- Create a separate namespace with the given name for the listed dll:s.');
   ConsoleOutput(I_CoverageConfiguration.cPARAMETER_UNIT_NAMESPACE +
       ' dll_or_exe unitname [unitname2]   -- Create a separate namespace (the namespace name will be the name of the module without extension) *ONLY* for the listed units within the module.');
   ConsoleOutput(I_CoverageConfiguration.cPARAMETER_LINE_COUNT +
-    ' [number] -- Count number of times a line is executed up to the specified limit (default 0 - disabled) (Win32 only)');
+    ' [number]       -- Count number of times a line is executed up to the specified limit (default 0 - disabled)');
+  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_CODE_PAGE +
+    ' [number]        -- Code page of source files');
+  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_TESTEXE_EXIT_CODE +
+    '                -- Passthrough the exitcode of the application');
+  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_USE_TESTEXE_WORKING_DIR +
+    '                -- Use the application''s path as working directory');
+  ConsoleOutput(I_CoverageConfiguration.cPARAMETER_JACOCO +
+    '          -- Output jacoco coverage XML file in the output directory');
 
 end;
 
@@ -292,7 +329,7 @@ begin
   except
     on E: EConfigurationException do
     begin
-      ConsoleOutput('Exception parsing the command line:' + E.message);
+      ConsoleOutput('Exception parsing the command line: ' + E.message);
       PrintUsage;
     end;
     on E: Exception do
@@ -365,6 +402,12 @@ begin
     CoverageReport := TEmmaCoverageFile.Create(FCoverageConfiguration);
     CoverageReport.Generate(FCoverageStats, FModuleList,FLogManager);
   end;
+
+  if (FCoverageConfiguration.JacocoOutput) then
+  begin
+    CoverageReport := TJacocoCoverageReport.Create(FCoverageConfiguration);
+    CoverageReport.Generate(FCoverageStats, FModuleList,FLogManager);
+  end;
 end;
 
 function TDebugger.StartProcessToDebug: Boolean;
@@ -372,6 +415,7 @@ var
   StartInfo: TStartupInfo;
   ProcInfo: TProcessInformation;
   Parameters: string;
+  WorkingDir: PChar;
 begin
   Parameters := FCoverageConfiguration.ApplicationParameters;
   FLogManager.Log(
@@ -387,6 +431,12 @@ begin
   StartInfo.hStdOutput := GetStdHandle(STD_OUTPUT_HANDLE);
   StartInfo.hStdError := GetStdHandle(STD_ERROR_HANDLE);
 
+  WorkingDir := nil;
+  if FCoverageConfiguration.UseTestExePathAsWorkingDir then
+  begin
+    WorkingDir := PChar(ExtractFilePath(FCoverageConfiguration.ExeFileName));
+  end;
+
   Parameters := '"' + FCoverageConfiguration.ExeFileName + '" ' + Parameters;
   Result := CreateProcess(
     nil,
@@ -396,7 +446,7 @@ begin
     True,
     CREATE_NEW_PROCESS_GROUP + NORMAL_PRIORITY_CLASS + DEBUG_PROCESS,
     nil,
-    nil,
+    WorkingDir,
     StartInfo,
     ProcInfo
   );
@@ -452,7 +502,7 @@ begin
           ConsoleOutput(
             'Unable to start executable "' +
             FCoverageConfiguration.ExeFileName + '"');
-          ConsoleOutput('Error :' + I_LogManager.LastErrorInfo);
+          ConsoleOutput('Error : ' + I_LogManager.LastErrorInfo);
         end;
       end
       else
@@ -510,7 +560,7 @@ begin
   begin
     WaitOK := WaitForDebugEvent(DebugEvent, 1000);
 
-    DebugEventHandlingResult := DBG_CONTINUE;
+    DebugEventHandlingResult := DWORD(DBG_EXCEPTION_NOT_HANDLED);
 
     if WaitOK then
     begin
@@ -622,10 +672,16 @@ begin
 
           if (ModuleName = ModuleNameFromAddr) then
           begin
-            UnitName := AMapScanner.SourceNameFromAddr(MapLineNumber.VA);
+            //In the Delphi map-files we have entries like:
+            //Line numbers for Next.Account.Repository(Next.Core.Promises.pas) segment .text
+            //
+            //These refer to the file between () and to the one in front, which
+            //SourceNameFromAddr refers to. No idea if this is a bug in JCL, but
+            //we can solve our issue by refering to the unitname
+            UnitName := AMapScanner.MapStringToSourceFile(MapLineNumber.UnitName);
             if ExtractFileExt(UnitName) = '' then
               UnitName := ChangeFileExt(UnitName, '.pas');
-            UnitModuleName := ChangeFileExt(UnitName, '');
+            UnitModuleName := ExtractFileName(ChangeFileExt(UnitName, ''));
 
             if (AModuleList.IndexOf(UnitModuleName) > -1)
             and (AModuleList.IndexOf(ModuleName) > -1)
@@ -634,7 +690,21 @@ begin
               FLogManager.Log(
                 'Setting BreakPoint for module: ' + ModuleName +
                 ' unit ' + UnitName +
-                ' addr:' + IntToStr(LineIndex));
+                ' moduleName: ' + ModuleName +
+                ' unitModuleName: ' + UnitModuleName +
+                ' addr:' + IntToStr(LineIndex) +
+                {$IF CompilerVersion > 31}
+                ' VA:' + IntToHex(MapLineNumber.VA) +
+                {$ELSE}
+                ' VA:' + IntToHex(MapLineNumber.VA, SizeOf(DWORD)*2) +
+                {$ENDIF}
+                ' Base:' + IntToStr(AModule.Base) +
+                {$IF CompilerVersion > 31}
+                ' Address: ' + IntToHex(Integer(AddressFromVA(MapLineNumber.VA, AModule.Base)))
+                {$ELSE}
+                ' Address: ' + IntToHex(Integer(AddressFromVA(MapLineNumber.VA, AModule.Base)), SizeOf(DWORD)*2)
+                {$ENDIF}
+                );
 
               BreakPoint := FBreakPointList.BreakPointByAddress[(AddressFromVA(MapLineNumber.VA, AModule.Base))];
               if not Assigned(BreakPoint) then
@@ -676,7 +746,9 @@ begin
       end;
 
       for UnitModuleName in SkippedModules do
+      begin
         FLogManager.Log('Module ' + UnitModuleName + ' skipped');
+      end;
     finally
       SkippedModules.Free;
     end;
@@ -686,7 +758,8 @@ begin
 end;
 
 function TDebugger.GetImageName(const APtr: Pointer; const AUnicode: Word;
-  const AlpBaseOfDll: Pointer; const AHandle: THANDLE): string;
+  const AlpBaseOfDll: Pointer; const AHandle: THANDLE;
+  const ADLLHandle: THandle): string;
 var
   PtrDllName: Pointer;
   ByteRead: DWORD;
@@ -694,29 +767,37 @@ var
   ImageName: array [0 .. MAX_PATH] of Char;
 begin
   Result := '';
-  if (APtr <> nil) then
+  if GetFinalPathNameByHandle(ADLLHandle, ImageName, Length(ImageName), 0) > 0 then
   begin
-    if ReadProcessMemory(AHandle, APtr, @PtrDllName, sizeof(PtrDllName), @ByteRead) then
+    Result := string(ImageName);
+  end
+  else
+  begin
+    FLogManager.Log('Error ' + SysErrorMessage(GetLastError));
+    if APtr <> nil then
     begin
-      if (PtrDllName <> nil) then
+      if ReadProcessMemory(AHandle, APtr, @PtrDllName, sizeof(PtrDllName), @ByteRead) then
       begin
-        if ReadProcessMemory(AHandle, PtrDllName, @ImageName, sizeof(ImageName), @ByteRead) then
+        if PtrDllName <> nil then
         begin
-          if AUnicode <> 0 then
-            Result := string(PWideChar(@ImageName))
-          else
-            Result := string(PChar(@ImageName));
+          if ReadProcessMemory(AHandle, PtrDllName, @ImageName, sizeof(ImageName), @ByteRead) then
+          begin
+            if AUnicode <> 0 then
+              Result := string(PWideChar(@ImageName))
+            else
+              Result := string(PChar(@ImageName));
+          end;
         end;
-      end;
-    end
-    else
-    begin
-      // if ReadProcessMemory failed
-      FLogManager.Log('ReadProcessMemory error: ' + SysErrorMessage(GetLastError));
-      if GetModuleFileNameEx (AHandle, HMODULE(AlpBaseOfDll), ImageName, MAX_PATH) = 0 then
-        FLogManager.Log('GetModuleFileNameEx error: ' + SysErrorMessage(GetLastError))
+      end
       else
-        Result := string(PWideChar(@ImageName));
+      begin
+        // if ReadProcessMemory failed
+        FLogManager.Log('ReadProcessMemory error: ' + SysErrorMessage(GetLastError));
+        if GetModuleFileNameEx (AHandle, HMODULE(AlpBaseOfDll), ImageName, MAX_PATH) = 0 then
+          FLogManager.Log('GetModuleFileNameEx error: ' + SysErrorMessage(GetLastError))
+        else
+          Result := string(PWideChar(@ImageName));
+      end;
     end;
   end;
 end;
@@ -733,9 +814,19 @@ begin
   PEImage := TJCLPEImage.Create;
   try
     PEImage.FileName := ProcessName;
+    {$IFDEF CPUX64}
+    Size := PEImage.OptionalHeader64.SizeOfCode;
+    {$ELSE}
     Size := PEImage.OptionalHeader32.SizeOfCode;
+    {$ENDIF}
+    FProcessTarget := PEImage.Target;
   finally
     PEImage.Free;
+  end;
+
+  if not (FProcessTarget in [taWin32, taWin64]) then begin
+    FLogManager.Log('Unknown executable type, cannot start debugging.');
+    Exit;
   end;
 
   FLogManager.Log('Create Process:' + IntToStr(ADebugEvent.dwProcessId) + ' name:' + ProcessName);
@@ -812,7 +903,7 @@ begin
     Cardinal(EXCEPTION_ACCESS_VIOLATION):
       begin
         FLogManager.Log(
-          'ACCESS VIOLATION at Address:' + IntToHex(Integer(ExceptionRecord.ExceptionAddress), 8));
+          'ACCESS VIOLATION at Address:' + IntToHex(NativeUINT(ExceptionRecord.ExceptionAddress), SizeOf(NativeUINT) * 2));
         FLogManager.Log(IntToHex(ExceptionRecord.ExceptionCode, 8) + ' not a debug BreakPoint');
 
         if ExceptionRecord.NumberParameters > 1 then
@@ -825,7 +916,7 @@ begin
             FLogManager.Log('DEP exception');
 
           FLogManager.Log(
-            'Trying to access Address:' + IntToHex(Integer(ExceptionRecord.ExceptionInformation[1]), 8));
+            'Trying to access Address:' + IntToHex(NativeUINT(ExceptionRecord.ExceptionInformation[1]),SizeOf(NativeUINT) * 2));
 
           if Assigned(MapScanner) then
           begin
@@ -846,12 +937,12 @@ begin
             if not Assigned(Module) then
               FLogManager.Log(
                 'No map information available Address:' +
-                IntToHex(Integer(ExceptionRecord.ExceptionInformation[1]), 8) +
+                IntToHex(NativeUINT(ExceptionRecord.ExceptionInformation[1]), SizeOf(NativeUINT) * 2) +
                 ' in unknown module')
             else
               FLogManager.Log(
                 'No map information available Address:' +
-                IntToHex(Integer(ExceptionRecord.ExceptionInformation[1]), 8) +
+                IntToHex(NativeUINT(ExceptionRecord.ExceptionInformation[1]), SizeOf(NativeUINT) * 2) +
                 ' module ' + Module.Name);
           end;
 
@@ -860,6 +951,7 @@ begin
       end;
 
     // Cardinal(EXCEPTION_ARRAY_BOUNDS_EXCEEDED) :
+    Cardinal(STATUS_WX86_BREAKPOINT),
     Cardinal(EXCEPTION_BreakPoint):
       begin
         BreakPoint := FBreakPointList.BreakPointByAddress[
@@ -887,7 +979,11 @@ begin
                 if GetThreadContext(DebugThread.Handle, ContextRecord) then
                 begin
                   // Rewind to previous instruction
+                  {$IFDEF CPUX64}
+                  Dec(ContextRecord.Rip);
+                  {$ELSE}
                   Dec(ContextRecord.Eip);
+                  {$ENDIF}
                   // Set TF (Trap Flag so we get debug exception after next instruction
                   ContextRecord.EFlags := ContextRecord.EFlags or $100;
                   SetThreadContext(DebugThread.Handle, ContextRecord);
@@ -901,7 +997,12 @@ begin
             end
             else
             begin
-              FLogManager.Log('BreakPoint already cleared - BreakPoint in source?');
+              FLogManager.Log('BreakPoint already cleared - multi threaded code (or breakPoint in source?)');
+
+              //Multi threaded execution of exactly the same instruction, make sure
+              //we rewind to the previous instruction (the op code is already
+              //changed in the original .Clear/.Deactivate of the breakpoint)
+              BreakPoint.Clear(DebugThread);
             end;
           end
           else
@@ -912,7 +1013,7 @@ begin
           // A good contender for this is ntdll.DbgBreakPoint {$7C90120E}
           FLogManager.Log(
             'Couldn''t find BreakPoint for exception address:' +
-            IntToHex(Integer(ExceptionRecord.ExceptionAddress), 8));
+            IntToHex(NativeUINT(ExceptionRecord.ExceptionAddress), SizeOf(NativeUINT) * 2));
         end;
         ADebugEventHandlingResult := Cardinal(DBG_CONTINUE);
       end;
@@ -932,7 +1033,7 @@ begin
       begin
         FLogManager.Log(
           'EXCEPTION_DATATYPE_MISALIGNMENT Address:' +
-          IntToHex(Integer(ExceptionRecord.ExceptionAddress), 8));
+          IntToHex(NativeUINT(ExceptionRecord.ExceptionAddress), SizeOf(NativeUINT) * 2));
         FLogManager.Log(
           IntToHex(ExceptionRecord.ExceptionCode, 8) + ' not a debug BreakPoint');
         AContProcessEvents := False;
@@ -957,7 +1058,8 @@ begin
   else
     begin
       FLogManager.Log('EXCEPTION CODE:' + IntToHex(ExceptionRecord.ExceptionCode, 8));
-      FLogManager.Log('Address:' + IntToHex(Integer(ExceptionRecord.ExceptionAddress), 8));
+      FLogManager.Log('Address:' + IntToHex(NativeUINT(ExceptionRecord.ExceptionAddress),
+        SizeOf(NativeUINT) * 2));
       FLogManager.Log('EXCEPTION flags:' + IntToHex(ExceptionRecord.ExceptionFlags, 8));
       LogStackFrame(ADebugEvent);
     end;
@@ -973,8 +1075,19 @@ var
   DebugThread: IDebugThread;
   Module: IDebugModule;
   MapScanner: TJCLMapScanner;
+  MachineType: DWORD;
 begin
   ContextRecord.ContextFlags := CONTEXT_ALL;
+  case FProcessTarget of
+    taWin32:
+      MachineType := IMAGE_FILE_MACHINE_I386;
+    taWin64:
+      MachineType := IMAGE_FILE_MACHINE_AMD64;
+    else begin
+      FLogManager.Log('Unkown platform');
+      Exit;
+    end;
+  end;
 
   DebugThread := FDebugProcess.GetThreadById(ADebugEvent.dwThreadId);
 
@@ -983,43 +1096,39 @@ begin
     if GetThreadContext(DebugThread.Handle, ContextRecord) then
     begin
       FillChar(StackFrame, SizeOf(StackFrame), 0);
+      {$IFDEF CPUX64}
+      StackFrame.AddrPC.Offset := ContextRecord.Rip;
+      StackFrame.AddrFrame.Offset := ContextRecord.Rbp;
+      StackFrame.AddrStack.Offset := ContextRecord.Rsp;
+      {$ELSE}
       StackFrame.AddrPC.Offset := ContextRecord.Eip;
-      StackFrame.AddrPC.Mode := AddrModeFlat;
       StackFrame.AddrFrame.Offset := ContextRecord.Ebp;
-      StackFrame.AddrFrame.Mode := AddrModeFlat;
       StackFrame.AddrStack.Offset := ContextRecord.Esp;
+      {$ENDIF}
+      StackFrame.AddrPC.Mode := AddrModeFlat;
+      StackFrame.AddrFrame.Mode := AddrModeFlat;
       StackFrame.AddrStack.Mode := AddrModeFlat;
-
-      StackWalk64(
-        IMAGE_FILE_MACHINE_I386,
-        FDebugProcess.Handle,
-        DebugThread.Handle,
-        StackFrame,
-        @ContextRecord,
-        @RealReadFromProcessMemory,
-        nil, nil, nil);
 
       FLogManager.Log('---------------Stack trace --------------');
       while StackWalk64(
-        IMAGE_FILE_MACHINE_I386,
+        MachineType,
         FDebugProcess.Handle,
         DebugThread.Handle,
         StackFrame,
         @ContextRecord,
-        @RealReadFromProcessMemory,
-        nil, nil, nil
+        nil, nil, nil, nil
       ) do
       begin
-        if (StackFrame.AddrPC.Offset <> 0) then
+        if StackFrame.AddrPC.Offset <> 0 then
         begin
           Module := FDebugProcess.FindDebugModuleFromAddress(Pointer(StackFrame.AddrPC.Offset));
-          if (Module <> nil) then
+          if Module <> nil then
           begin
             MapScanner := Module.MapScanner;
 
             FLogManager.Log(
               'Module : ' + Module.Name +
-              ' Stack frame:' + IntToHex(Cardinal(Pointer(StackFrame.AddrPC.Offset)), 8));
+              ' Stack frame:' + IntToHex(NativeUINT(Pointer(StackFrame.AddrPC.Offset)), SizeOf(NativeUINT) * 2));
             if Assigned(MapScanner) then
             begin
               for LineIndex := 0 to MapScanner.LineNumbersCnt - 1 do
@@ -1053,7 +1162,7 @@ begin
           begin
             FLogManager.Log(
               'No module found for exception address:' +
-              IntToHex(StackFrame.AddrPC.Offset, 8));
+              IntToHex(StackFrame.AddrPC.Offset, SizeOf(DWORD64) * 2));
           end;
         end;
       end;
@@ -1100,7 +1209,7 @@ begin
     ADebugEvent.LoadDll.lpImageName,
     ADebugEvent.LoadDll.fUnicode,
     ADebugEvent.LoadDll.lpBaseOfDll,
-    FDebugProcess.Handle);
+    FDebugProcess.Handle, ADebugEvent.LoadDll.hFile);
 
   if DllName = 'WOW64_IMAGE_SECTION' then
   begin
@@ -1112,7 +1221,11 @@ begin
     PEImage := TJCLPEImage.Create;
     try
       PEImage.FileName := DllName;
+      {$IFDEF CPUX64}
+      Size := PEImage.OptionalHeader64.SizeOfCode;
+      {$ELSE}
       Size := PEImage.OptionalHeader32.SizeOfCode;
+      {$ENDIF}
     finally
       PEImage.Free;
     end;
@@ -1138,7 +1251,7 @@ begin
       ExtraMsg := ' (' + DllName + ') size :' + IntToStr(Size);
 
       FLogManager.Log(
-        'Loading DLL at addr:' + IntToHex(DWORD(ADebugEvent.LoadDll.lpBaseOfDll), 8) +
+        'Loading DLL at addr:' + IntToHex(NativeUINT(ADebugEvent.LoadDll.lpBaseOfDll), SizeOf(NativeUINT)*2) +
         ExtraMsg);
 
       ModuleNameSpace := FCoverageConfiguration.ModuleNameSpace(ExtractFileName(DllName));
@@ -1170,7 +1283,7 @@ end;
 procedure TDebugger.HandleUnLoadDLL(const ADebugEvent: DEBUG_EVENT);
 begin
   FLogManager.Log(
-    'UnLoading DLL:' + IntToHex(DWORD(ADebugEvent.LoadDll.lpBaseOfDll), 8));
+    'UnLoading DLL:' + IntToHex(NativeUINT(ADebugEvent.LoadDll.lpBaseOfDll), SizeOf(NativeUINT) * 2));
 end;
 
 procedure TDebugger.HandleOutputDebugString(const ADebugEvent: DEBUG_EVENT);

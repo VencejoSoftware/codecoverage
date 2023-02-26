@@ -1,11 +1,13 @@
-(* ************************************************************ *)
-(* Delphi Code Coverage *)
-(* *)
-(* A quick hack of a Code Coverage Tool for Delphi 2010 *)
-(* by Christer Fahlgren and Nick Ring *)
-(* ************************************************************ *)
-(* Licensed under Mozilla Public License 1.1 *)
-(* ************************************************************ *)
+(***********************************************************************)
+(* Delphi Code Coverage                                                *)
+(*                                                                     *)
+(* A quick hack of a Code Coverage Tool for Delphi                     *)
+(* by Christer Fahlgren and Nick Ring                                  *)
+(*                                                                     *) 
+(* This Source Code Form is subject to the terms of the Mozilla Public *)
+(* License, v. 2.0. If a copy of the MPL was not distributed with this *)
+(* file, You can obtain one at http://mozilla.org/MPL/2.0/.            *)
+
 unit ClassInfoUnit;
 
 interface
@@ -162,14 +164,11 @@ type
 implementation
 
 uses
-  Types,
-  SysUtils,
-  StrUtils,
-  Math,
-  {$IF CompilerVersion < 21}
-  StrUtilsD9,
-  {$IFEND}
-  Classes,
+  System.Types,
+  System.SysUtils,
+  System.StrUtils,
+  System.Math,
+  System.Classes,
   uConsoleOutput;
 
 {$region 'TModuleList'}

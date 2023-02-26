@@ -1,18 +1,19 @@
-(**************************************************************)
-(* Delphi Code Coverage                                       *)
-(*                                                            *)
-(* A quick hack of a Code Coverage Tool for Delphi 2010       *)
-(* by Christer Fahlgren                                       *)
-(**************************************************************)
-(* Licensed under Mozilla Public License 1.1                  *)
-(**************************************************************)
+(***********************************************************************)
+(* Delphi Code Coverage                                                *)
+(*                                                                     *)
+(* A quick hack of a Code Coverage Tool for Delphi                     *)
+(* by Christer Fahlgren and Nick Ring                                  *)
+(*                                                                     *) 
+(* This Source Code Form is subject to the terms of the Mozilla Public *)
+(* License, v. 2.0. If a copy of the MPL was not distributed with this *)
+(* file, You can obtain one at http://mozilla.org/MPL/2.0/.            *)
 
 unit BreakPoint;
 
 interface
 
 uses
-  Classes,
+  System.Classes,
   I_BreakPoint,
   I_DebugThread,
   I_DebugProcess,
@@ -65,8 +66,8 @@ type
 implementation
 
 uses
-  SysUtils,
-  Windows;
+  System.SysUtils,
+  Winapi.Windows;
 
 constructor TBreakPoint.Create(const ADebugProcess: IDebugProcess;
                                const AAddress: Pointer;
@@ -181,7 +182,8 @@ var
   ContextRecord: CONTEXT;
   Result: BOOL;
 begin
-  FLogManager.Log('Clearing BreakPoint at ' + IntToHex(Integer(FAddress), 8));
+  FLogManager.Log('Clearing BreakPoint at ' + IntToHex(NativeUInt(FAddress),
+    SizeOf(NativeUINT) * 2));
 
   ContextRecord.ContextFlags := CONTEXT_CONTROL;
 

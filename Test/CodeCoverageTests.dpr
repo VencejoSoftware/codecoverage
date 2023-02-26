@@ -1,3 +1,12 @@
+(***********************************************************************)
+(* Delphi Code Coverage                                                *)
+(*                                                                     *)
+(* A quick hack of a Code Coverage Tool for Delphi                     *)
+(* by Christer Fahlgren and Nick Ring                                  *)
+(*                                                                     *) 
+(* This Source Code Form is subject to the terms of the Mozilla Public *)
+(* License, v. 2.0. If a copy of the MPL was not distributed with this *)
+(* file, You can obtain one at http://mozilla.org/MPL/2.0/.            *)
 program CodeCoverageTests;
 
 {$IFDEF CONSOLE_TESTRUNNER}
@@ -12,8 +21,6 @@ uses
   TestFramework,
   GUITestRunner,
   XmlTestRunner,
-  StrUtilsD9Tests in 'StrUtilsD9Tests.pas',
-  StrUtilsD9 in '..\3rdParty\StrUtilsD9.pas',
   CoverageConfiguration in '..\Source\CoverageConfiguration.pas',
   CoverageConfigurationTest in 'CoverageConfigurationTest.pas',
   MockCommandLineProvider in 'MockCommandLineProvider.pas',
@@ -34,7 +41,12 @@ uses
   I_Debugger in '..\Source\I_Debugger.pas',
   I_DebugModule in '..\Source\I_DebugModule.pas',
   I_DebugProcess in '..\Source\I_DebugProcess.pas',
-  I_DebugThread in '..\Source\I_DebugThread.pas';
+  I_DebugThread in '..\Source\I_DebugThread.pas',
+  CoverageStatsMergeTests in 'CoverageStatsMergeTests.pas',
+  CoverageStats in '..\Source\CoverageStats.pas',
+  I_CoverageStats in '..\Source\I_CoverageStats.pas',
+  XMLCoverageReport in '..\Source\XMLCoverageReport.pas',
+  I_Report in '..\Source\I_Report.pas';
 
 {$R *.RES}
 

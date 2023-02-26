@@ -1,8 +1,17 @@
+(***********************************************************************)
+(* Delphi Code Coverage                                                *)
+(*                                                                     *)
+(* A quick hack of a Code Coverage Tool for Delphi                     *)
+(* by Christer Fahlgren and Nick Ring                                  *)
+(*                                                                     *) 
+(* This Source Code Form is subject to the terms of the Mozilla Public *)
+(* License, v. 2.0. If a copy of the MPL was not distributed with this *)
+(* file, You can obtain one at http://mozilla.org/MPL/2.0/.            *)
 program CodeCoverage;
 {$APPTYPE CONSOLE}
 
 uses
-  SysUtils,
+  System.SysUtils,
   BreakPoint in 'BreakPoint.pas',
   BreakpointList in 'BreakpointList.pas',
   CommandLineProvider in 'CommandLineProvider.pas',
@@ -13,7 +22,7 @@ uses
   DebugProcess in 'DebugProcess.pas',
   DebugThread in 'DebugThread.pas',
   I_BreakPoint in 'I_BreakPoint.pas',
-  I_BreakPointList in 'I_BreakpointList.pas',
+  I_BreakpointList in 'I_BreakpointList.pas',
   I_CoverageConfiguration in 'I_CoverageConfiguration.pas',
   I_CoverageStats in 'I_CoverageStats.pas',
   I_Debugger in 'I_Debugger.pas',
@@ -38,8 +47,11 @@ uses
   I_DebugModule in 'I_DebugModule.pas',
   ModuleNameSpaceUnit in 'ModuleNameSpaceUnit.pas',
   uConsoleOutput in 'uConsoleOutput.pas',
-  HtmlHelper in 'HtmlHelper.pas';
+  HtmlHelper in 'HtmlHelper.pas',
+  JclMapScannerHelper in 'JclMapScannerHelper.pas',
+  JacocoCoverageFileUnit in 'JacocoCoverageFileUnit.pas';
 
+{$R *.res}
 var
   // Delphi 7 leaks interfaces from here :-(
   ADebugger: TDebugger;

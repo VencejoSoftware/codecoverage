@@ -3,12 +3,12 @@
 (*                                                                     *)
 (* A quick hack of a Code Coverage Tool for Delphi                     *)
 (* by Christer Fahlgren and Nick Ring                                  *)
-(*                                                                     *) 
+(*                                                                     *)
 (* This Source Code Form is subject to the terms of the Mozilla Public *)
 (* License, v. 2.0. If a copy of the MPL was not distributed with this *)
 (* file, You can obtain one at http://mozilla.org/MPL/2.0/.            *)
 
-unit XMLCoverageReport;
+unit JacocoCoverageFileUnit;
 
 interface
 
@@ -21,7 +21,7 @@ uses
   I_LogManager;
 
 type
-  TXMLCoverageReport = class(TInterfacedObject, IReport)
+  TJacocoCoverageReport = class(TInterfacedObject, IReport)
   strict private
     FCoverageConfiguration: ICoverageConfiguration;
 
@@ -50,9 +50,12 @@ type
     procedure AddMethodStats(
       const ARootElement: TJclSimpleXMLElem;
       const AMethod: TProcedureInfo);
+    procedure AddSourceStats(
+      const ARootElement: TJclSimpleXMLElem;
+      const AModule: TModuleInfo);
 
     procedure AddCoverageElement(const RootElement: TJclSimpleXMLElem;
-      const AType: string; const TotalCoveredCount, TotalCount: Integer);
+      const AType: string; const TotalCoveredCount, TotalUncoveredCount: Integer);
     function GetCoverageStringValue(const ACovered, ATotal: Integer): string;
   public
     constructor Create(const ACoverageConfiguration: ICoverageConfiguration);
@@ -63,27 +66,28 @@ type
       const ALogManager: ILogManager);
   end;
 
-  TXMLCoverageReportMerger = class helper for TXMLCoverageReport
+  TJacocoCoverageReportMerger = class helper for TJacocoCoverageReport
     class function MergeCoverageStatsForGenerics(const ACoverageStatsIn: ICoverageStats): ICoverageStats;
   end;
 
 implementation
 
 uses
+  System.DateUtils,
   System.StrUtils,
   System.SysUtils,
   System.Math,
   JclFileUtils,
   Generics.Collections, CoverageStats;
 
-constructor TXMLCoverageReport.Create(
+constructor TJacocoCoverageReport.Create(
   const ACoverageConfiguration: ICoverageConfiguration);
 begin
   inherited Create;
   FCoverageConfiguration := ACoverageConfiguration;
 end;
 
-procedure TXMLCoverageReport.Generate(
+procedure TJacocoCoverageReport.Generate(
   const ACoverage: ICoverageStats;
   const AModuleInfoList: TModuleList;
   const ALogManager: ILogManager);
@@ -98,10 +102,23 @@ var
       .Properties.Add('value', AValue);
   end;
 
+  procedure AddElement(AElement: TJclSimpleXMLElem; const APropertyName: string; const AValue: Integer); overload;
+  begin
+    AElement.Properties.Add(APropertyName, AValue);
+  end;
+
+  procedure AddElement(AElement: TJclSimpleXMLElem; const APropertyName: string; const AValue: String); overload;
+  begin
+    AElement.Properties.Add(APropertyName, AValue);
+  end;
+
 var
+  Uid: TGuid;
+  Result: HResult;
+
   ModuleInfo: TModuleInfo;
   XML: TJclSimpleXML;
-  AllElement: TJclSimpleXMLElem;
+  SessionElement: TJclSimpleXMLElem;
   DataElement: TJclSimpleXMLElem;
   LineHitsElement: TJclSimpleXMLElem;
   CoverageIndex: Integer;
@@ -109,37 +126,34 @@ var
   ModuleCoverage: ICoverageStats;
   XmlLinesCoverage: ICoverageStats;
 begin
-  ALogManager.Log('Generating xml coverage report');
+  ALogManager.Log('Generating jacoco xml report');
 
   XML := TJclSimpleXML.Create;
   try
+    // Prolog doesn't seem to get written properly (with carriage returns)
+    XML.Prolog.AddDocType('report PUBLIC "-//JACOCO//DTD Report 1.0//EN" "report.dtd"');
+    XML.Prolog.Standalone := true;
+
+
     XML.Root.Name := 'report';
+    AddElement(XML.Root, 'name', 'debug');   // For now
 
-    StatsElement := XML.Root.Items.Add('stats');
-    AddValueElement('packages', AModuleInfoList.Count);
+    SessionElement := XML.Root.Items.Add('session');
 
-    AddValueElement('classes', AModuleInfoList.ClassCount);
-    AddValueElement('methods', AModuleInfoList.MethodCount);
-
-    AddValueElement('srcfiles', AModuleInfoList.Count);
-    AddValueElement('srclines', AModuleInfoList.LineCount);
-
-    AddValueElement('totallines', ACoverage.LineCount);
-    AddValueElement('coveredlines', ACoverage.CoveredLineCount);
-
-    AddValueElement('coveredpercent', ACoverage.PercentCovered);
-
-    DataElement := XML.Root.Items.Add('data');
-    AllElement := DataElement.Items.Add('all');
-    AllElement.Properties.Add('name', 'all classes');
-
-    AddAllStats(AllElement, ACoverage, AModuleInfoList);
+    Result := CreateGuid(Uid);
+    if Result = S_OK then
+      SessionElement.Properties.Add('id', GuidToString(Uid));    { TODO: Not sure of the format }
+    SessionElement.Properties.Add('start', DateTimeToUnix(now)); { TODO: Should be a start time }
+    SessionElement.Properties.Add('dump', DateTimeToUnix(now));
 
     for ModuleInfo in AModuleInfoList do
     begin
-      AddModuleInfo(AllElement, ModuleInfo);
+      AddModuleInfo(XML.Root, ModuleInfo);
     end;
 
+
+
+                               (*
     if FCoverageConfiguration.XmlLines then
     begin
       if FCoverageConfiguration.XmlMergeGenerics then begin
@@ -159,16 +173,17 @@ begin
         end;
       end;
     end;
+    *)
 
     XML.SaveToFile(
-      PathAppend(FCoverageConfiguration.OutputDir, 'CodeCoverage_Summary.xml')
+      PathAppend(FCoverageConfiguration.OutputDir, 'jacoco.xml')
     );
   finally
     XML.Free;
   end;
 end;
 
-procedure TXMLCoverageReport.AddAllStats(
+procedure TJacocoCoverageReport.AddAllStats(
   const AAllElement: TJclSimpleXMLElem;
   const ACoverageStats: ICoverageStats;
   const AModuleList: TModuleList);
@@ -190,7 +205,7 @@ begin
     AModuleList.CoveredLineCount, AModuleList.LineCount);
 end;
 
-procedure TXMLCoverageReport.AddModuleInfo(
+procedure TJacocoCoverageReport.AddModuleInfo(
   AAllElement: TJclSimpleXMLElem;
   const AModuleInfo: TModuleInfo);
 var
@@ -199,20 +214,22 @@ var
   ClassInfo: TClassInfo;
 begin
   PackageElement := AAllElement.Items.Add('package');
-  PackageElement.Properties.Add('name', AModuleInfo.ModuleName);
-  AddModuleStats(PackageElement, AModuleInfo);
-
-  SourceFileElement := PackageElement.Items.Add('srcfile');
-  SourceFileElement.Properties.Add('name', AModuleInfo.ModuleFileName);
-  AddModuleStats(SourceFileElement, AModuleInfo);
+  PackageElement.Properties.Add('name', AModuleInfo.ModuleName.Replace('.','/'));
 
   for ClassInfo in AModuleInfo do
   begin
-    AddClassInfo(SourceFileElement, ClassInfo);
+    AddClassInfo(PackageElement, ClassInfo);
   end;
+
+  SourceFileElement := PackageElement.Items.Add('sourcefile');
+  SourceFileElement.Properties.Add('name', AModuleInfo.ModuleFileName);
+
+  { TODO: Lines }
+  AddSourceStats(SourceFileElement, AModuleInfo);
+
 end;
 
-procedure TXMLCoverageReport.AddModuleLineHits(
+procedure TJacocoCoverageReport.AddModuleLineHits(
   ALineHitsElement: TJclSimpleXMLElem;
   const ACoverage: ICoverageStats);
 var
@@ -242,7 +259,7 @@ begin
   end;
 end;
 
-procedure TXMLCoverageReport.AddModuleStats(
+procedure TJacocoCoverageReport.AddModuleStats(
   const RootElement: TJclSimpleXMLElem;
   const AModule: TModuleInfo);
 begin
@@ -267,7 +284,26 @@ begin
   );
 end;
 
-procedure TXMLCoverageReport.AddClassInfo(
+procedure TJacocoCoverageReport.AddSourceStats(
+  const ARootElement: TJclSimpleXMLElem; const AModule: TModuleInfo);
+begin
+  AddCoverageElement(ARootElement,
+          'LINE',
+          AModule.CoveredLineCount,
+          AModule.LineCount - AModule.CoveredLineCount);
+
+  AddCoverageElement(ARootElement,
+          'METHOD',
+          AModule.CoveredMethodCount,
+          AModule.MethodCount - AModule.CoveredMethodCount);
+
+  AddCoverageElement(ARootElement,
+          'CLASS',
+          AModule.CoveredClassCount,
+          AModule.ClassCount - AModule.CoveredClassCount);
+end;
+
+procedure TJacocoCoverageReport.AddClassInfo(
   ASourceFileElement: TJclSimpleXMLElem;
   const AClassInfo: TClassInfo);
 var
@@ -275,40 +311,36 @@ var
   ClassElement: TJclSimpleXMLElem;
 begin
   ClassElement := ASourceFileElement.Items.Add('class');
-  ClassElement.Properties.Add('name', AClassInfo.TheClassName);
-  AddClassStats(ClassElement, AClassInfo);
+  { TODO: Check whether this is enough }
+  ClassElement.Properties.Add('name', AClassInfo.Module.Replace('.','/') + '/' + AClassInfo.TheClassName);
 
   for Method in AClassInfo do
     AddMethodInfo(ClassElement, Method);
+
+  AddClassStats(ClassElement, AClassInfo);
 end;
 
-procedure TXMLCoverageReport.AddClassStats(
+procedure TJacocoCoverageReport.AddClassStats(
   const ARootElement: TJclSimpleXMLElem;
   const AClass: TClassInfo);
-var
-  IsCovered: Integer;
 begin
-  IsCovered := IfThen(AClass.PercentCovered > 0, 1, 0);
+  AddCoverageElement(ARootElement,
+          'LINE',
+          AClass.CoveredLineCount,
+          AClass.LineCount - AClass.CoveredLineCount);
 
-  AddCoverageElement(ARootElement, 'class, %', IsCovered, 1);
+  AddCoverageElement(ARootElement,
+          'METHOD',
+          AClass.CoveredProcedureCount,
+          AClass.ProcedureCount - AClass.CoveredProcedureCount);
 
-  AddCoverageElement(
-    ARootElement, 'method, %',
-    AClass.CoveredProcedureCount, AClass.ProcedureCount
-  );
-
-  AddCoverageElement(
-    ARootElement, 'block, %',
-    AClass.CoveredLineCount, AClass.LineCount
-  );
-
-  AddCoverageElement(
-    ARootElement, 'line, %',
-    AClass.CoveredLineCount, AClass.LineCount
-  );
+//  AddCoverageElement(ARootElement,
+//          'CLASS',
+//          AClass.,
+//          100 - AClass.PercentCovered);
 end;
 
-procedure TXMLCoverageReport.AddMethodInfo(
+procedure TJacocoCoverageReport.AddMethodInfo(
   AClassElement: TJclSimpleXMLElem;
   const AMethod: TProcedureInfo);
 var
@@ -316,49 +348,85 @@ var
 begin
   MethodElement := AClassElement.Items.Add('method');
   MethodElement.Properties.Add('name', AMethod.Name);
+  MethodElement.Properties.Add('desc', '()'); {TODO: Not sure we can pull this out }
   AddMethodStats(MethodElement, AMethod);
 end;
 
-procedure TXMLCoverageReport.AddMethodStats(
+procedure TJacocoCoverageReport.AddMethodStats(
   const ARootElement: TJclSimpleXMLElem;
   const AMethod: TProcedureInfo);
-var
-  IsCovered: Integer;
+//var
+//  IsCovered: Integer;
 begin
-  IsCovered := IfThen(AMethod.PercentCovered > 0, 1, 0);
+//  IsCovered := IfThen(AMethod.PercentCovered > 0, 1, 0);
 
-  AddCoverageElement(ARootElement, 'method, %', IsCovered, 1);
+  { TODO: Not sure about these either! }
 
+  // INSTRUCTION
+  { TODO: Is this the same as LINE? }
+//  AddCoverageElement(ARootElement,
+//          'counter',
+//          'INSTRUCTION',
+//          AMethod.CoveredLineCount,
+//          AMethod.LineCount - AMethod.CoveredLineCount);
+
+  // LINE
+  AddCoverageElement(ARootElement,
+          'LINE',
+          AMethod.CoveredLineCount,
+          AMethod.LineCount - AMethod.CoveredLineCount);
+
+//  AddCoverageElement(ARootElement,
+//          'METHOD',
+//          AMethod.PercentCovered,
+//          100 - AMethod.PercentCovered);
+
+//  AddCoverageElement(ARootElement,
+//          'counter',
+//          'INSTRUCTION',
+//          AMethod.CoveredLineCount,
+//          AMethod.LineCount - AMethod.CoveredLineCount);
+
+//   AddCoverageElement(ARootElement,
+//          'counter',
+//          'COMPLEXITY',
+//          AMethod.CoveredLineCount,
+//          AMethod.LineCount - AMethod.CoveredLineCount);
+
+
+  (*
   AddCoverageElement(
-    ARootElement, 'block, %',
+    ARootElement, 'counter',
     AMethod.CoveredLineCount, AMethod.LineCount
   );
 
   AddCoverageElement(
-    ARootElement, 'line, %',
+    ARootElement, 'counter',
     AMethod.CoveredLineCount, AMethod.LineCount
   );
+
+  AddCoverageElement(
+    ARootElement, 'counter',
+    AMethod.CoveredLineCount, AMethod.LineCount
+  );
+  *)
 end;
 
-procedure TXMLCoverageReport.AddCoverageElement(
+procedure TJacocoCoverageReport.AddCoverageElement(
   const RootElement: TJclSimpleXMLElem;
   const AType: string;
-  const TotalCoveredCount, TotalCount: Integer);
+  const TotalCoveredCount, TotalUncoveredCount: Integer);
 var
   CoverageElement: TJclSimpleXMLElem;
 begin
-  CoverageElement := RootElement.Items.Add('coverage');
+  CoverageElement := RootElement.Items.Add('counter');
   CoverageElement.Properties.Add('type', AType);
-  CoverageElement.Properties.Add(
-    'value',
-    GetCoverageStringValue(
-      TotalCoveredCount,
-      TotalCount
-    )
-  );
+  CoverageElement.Properties.Add('covered', TotalCoveredCount);
+  CoverageElement.Properties.Add('missed', TotalUncoveredCount);
+
 end;
 
-function TXMLCoverageReport.GetCoverageStringValue(const ACovered, ATotal: Integer): string;
+function TJacocoCoverageReport.GetCoverageStringValue(const ACovered, ATotal: Integer): string;
 var
   Percent: Integer;
 begin
@@ -370,9 +438,9 @@ begin
   Result := IntToStr(Percent) + '%   (' + IntToStr(ACovered) + '/' + IntToStr(ATotal) + ')';
 end;
 
-{ TXMLCoverageReportMerger }
+{ TJacocoCoverageReportMerger }
 
-class function TXMLCoverageReportMerger.MergeCoverageStatsForGenerics(
+class function TJacocoCoverageReportMerger.MergeCoverageStatsForGenerics(
   const ACoverageStatsIn: ICoverageStats): ICoverageStats;
 var
   i, j, line: Integer;
